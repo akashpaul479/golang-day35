@@ -1,12 +1,12 @@
 package main
 
 import (
-	"weatherapi/weatherapi2"
+	"weatherapi/weatherapi"
 )
 
 func main() {
 
-	// weatherapi.WeatherAPI()
-	weatherapi2.Weather2()
+	weatherapi.WeatherForecast()
+	// weatherapi2.Weather2()
 	// weatherapi2.Weather3()
 }

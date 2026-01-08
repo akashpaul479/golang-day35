@@ -3,97 +3,98 @@ package weatherapi
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"net/http"
-	"os"
-	"strings"
-
-	"github.com/joho/godotenv"
 )
 
-type OpenWeatherResponse struct {
-	Name string `json:"name"`
-	Main struct {
-		Temp float64 `json:"temp"`
-	} `json:"main"`
-	Weather []struct {
-		Description string `json:"description"`
-	} `json:"weather"`
+// Response struct for Open-Meteo API
+type WeatherResponse2 struct {
+	Daily struct {
+		Time           []string
+		Temperaturemax []float64 `json:"temperature_2m_max"`
+		Temperaturemin []float64 `json:"temperature_2m_min"`
+	} `json:"daily"`
 }
 
-type WeatherResult struct {
-	Location    string  `json:"location"`
-	Temperature float64 `json:"temperature"`
-	Status      string  `json:"status"`
+// Response struct for Geocoding API
+type GeoResponse struct {
+	Results []struct {
+		Name      string  `json:"name"`
+		Latitude  float64 `json:"latitude"`
+		Longitude float64 `json:"longitude"`
+		Country   string  `json:"country"`
+	} `json:"results"`
 }
 
-func init() {
-	if err := godotenv.Load(); err != nil {
-		fmt.Println("No .env file found")
-	}
-}
-
-func WeatherHandler(w http.ResponseWriter, r *http.Request) {
+// Handler to fetch temperature
+func getTemperatureHandler1(w http.ResponseWriter, r *http.Request) {
+	lat := r.URL.Query().Get("lat")
+	lon := r.URL.Query().Get("lon")
 	place := r.URL.Query().Get("place")
 
-	if strings.TrimSpace(place) == "" {
-		http.Error(w, "place should not be empty", http.StatusBadRequest)
+	// If place is given, resolve to lat/lon
+	if place != "" {
+		geoURL := fmt.Sprintf("https://geocoding-api.open-meteo.com/v1/search?name=%s", place)
+		resp, err := http.Get(geoURL)
+		if err != nil {
+			http.Error(w, "Failed to fetch geocoding data", http.StatusInternalServerError)
+			return
+		}
+		defer resp.Body.Close()
+
+		var geo GeoResponse
+		if err := json.NewDecoder(resp.Body).Decode(&geo); err != nil || len(geo.Results) == 0 {
+			http.Error(w, "Place not found", http.StatusBadRequest)
+			return
+		}
+
+		lat = fmt.Sprintf("%f", geo.Results[0].Latitude)
+		lon = fmt.Sprintf("%f", geo.Results[0].Longitude)
+		place = geo.Results[0].Name + ", " + geo.Results[0].Country
+	}
+
+	if lat == "" || lon == "" {
+		http.Error(w, "Missing lat/lon or place query param", http.StatusBadRequest)
 		return
 	}
 
-	apikey := os.Getenv("WEATHER_KEY")
+	// Build API URL
+	apiURL := fmt.Sprintf("https://api.open-meteo.com/v1/forecast?latitude=%s&longitude=%s&daily=temperature_2m_max,temperature_2m_min&timezone=auto", lat, lon)
 
-	if apikey == "" {
-		http.Error(w, "Weather key is not set in env", http.StatusInternalServerError)
-		return
-	}
-	Cleanplace := strings.TrimSpace(place)
-
-	url := fmt.Sprintf("https://api.openweathermap.org/data/2.5/weather?q=%s,IN&appid=%s&units=metric", Cleanplace, apikey)
-
-	resp, err := http.Get(url)
+	// Call Open-Meteo API
+	resp, err := http.Get(apiURL)
 	if err != nil {
-		http.Error(w, "failed to connect weather service", http.StatusBadRequest)
+		http.Error(w, "Failed to fetch weather data", http.StatusInternalServerError)
 		return
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		http.Error(w, "location not found", http.StatusNotFound)
-		return
-	}
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		http.Error(w, "invalid response", http.StatusBadRequest)
-		return
-	}
-	var ow OpenWeatherResponse
-	if err := json.Unmarshal(body, &ow); err != nil {
-		http.Error(w, "failes to parse weather json", http.StatusBadGateway)
+	// Decode JSON
+	var weather WeatherResponse2
+	if err := json.NewDecoder(resp.Body).Decode(&weather); err != nil {
+		http.Error(w, "Failed to parse weather data", http.StatusInternalServerError)
 		return
 	}
 
-	condition := "Not available"
-
-	if len(ow.Weather) > 0 {
-		condition = strings.ToLower(ow.Weather[0].Description)
-
-	}
-	result := WeatherResult{
-		Location:    ow.Name,
-		Temperature: ow.Main.Temp,
-		Status:      condition,
+	// Respond with temperature
+	response := map[string]interface{}{
+		"latitude":  lat,
+		"longitude": lon,
+		"place":     place,
+		"forecast":  weather.Daily,
 	}
 
+	// pretty print
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(result)
+	jsonData, err := json.MarshalIndent(response, "", " ")
+	if err != nil {
+		http.Error(w, "Failed to format json", http.StatusInternalServerError)
+		return
+	}
+	w.Write(jsonData)
 }
 
-// main func
-func WeatherAPI() {
-
-	http.HandleFunc("/api/weather", WeatherHandler)
-
+func WeatherForecast() {
+	http.HandleFunc("/temperature", getTemperatureHandler1)
 	fmt.Println("Server running on port:8080")
 	http.ListenAndServe(":8080", nil)
 }
